@@ -58,16 +58,21 @@ function loadFlowTags(): Promise<FlowTag[]> {
   if (flowTagsCache) return Promise.resolve(flowTagsCache);
   if (flowTagsInFlight) return flowTagsInFlight;
   const supabase = createClient();
-  flowTagsInFlight = supabase
-    .from('tags')
-    .select('id, name, color')
-    .order('name')
-    .then(({ data, error }) => {
-      flowTagsInFlight = null;
-      if (error || !data) return [];
-      flowTagsCache = data as FlowTag[];
-      return flowTagsCache;
-    });
+  // Supabase's query builder .then() resolves as PromiseLike<T>, not a
+  // full Promise<T> (no .catch/.finally/Symbol.toStringTag) -- wrap it
+  // so flowTagsInFlight's real-Promise type actually holds.
+  flowTagsInFlight = Promise.resolve(
+    supabase
+      .from('tags')
+      .select('id, name, color')
+      .order('name')
+      .then(({ data, error }) => {
+        flowTagsInFlight = null;
+        if (error || !data) return [];
+        flowTagsCache = data as FlowTag[];
+        return flowTagsCache;
+      })
+  );
   return flowTagsInFlight;
 }
 
