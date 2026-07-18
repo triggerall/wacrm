@@ -366,6 +366,7 @@ async function sendButtonsAndSuspend(
   db: AdminClient,
   run: FlowRunRow,
   node: FlowNodeRow,
+  contact: Record<string, string> = {},
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendButtonsNodeConfig;
   const { whatsapp_message_id } = await engineSendInteractiveButtons({
@@ -373,9 +374,18 @@ async function sendButtonsAndSuspend(
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
-    bodyText: cfg.text,
-    headerText: cfg.header_text,
-    footerText: cfg.footer_text,
+    bodyText: interpolateVars(cfg.text, run.vars, contact),
+    headerText: cfg.header_text
+      ? interpolateVars(cfg.header_text, run.vars, contact)
+      : cfg.header_text,
+    footerText: cfg.footer_text
+      ? interpolateVars(cfg.footer_text, run.vars, contact)
+      : cfg.footer_text,
+    // Button titles deliberately NOT interpolated -- Meta caps these at
+    // 20 chars, and a variable substitution could overflow that
+    // unpredictably depending on what a customer typed. Body/header/
+    // footer have real room (1024/60/60 chars) and are the actual
+    // greeting text this exists for.
     buttons: cfg.buttons.map((b) => ({ id: b.reply_id, title: b.title })),
   });
   await logEvent(db, run.id, "message_sent", node.node_key, {
@@ -402,6 +412,7 @@ async function sendListAndSuspend(
   db: AdminClient,
   run: FlowRunRow,
   node: FlowNodeRow,
+  contact: Record<string, string> = {},
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendListNodeConfig;
   const { whatsapp_message_id } = await engineSendInteractiveList({
@@ -409,16 +420,29 @@ async function sendListAndSuspend(
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
-    bodyText: cfg.text,
+    bodyText: interpolateVars(cfg.text, run.vars, contact),
+    // Not interpolated -- Meta caps this at 20 chars.
     buttonLabel: cfg.button_label,
-    headerText: cfg.header_text,
-    footerText: cfg.footer_text,
+    headerText: cfg.header_text
+      ? interpolateVars(cfg.header_text, run.vars, contact)
+      : cfg.header_text,
+    footerText: cfg.footer_text
+      ? interpolateVars(cfg.footer_text, run.vars, contact)
+      : cfg.footer_text,
     sections: cfg.sections.map((s) => ({
+      // Section title not interpolated -- Meta caps this at 24 chars,
+      // same reasoning as row/button titles below.
       title: s.title,
       rows: s.rows.map((r) => ({
         id: r.reply_id,
+        // Row title deliberately NOT interpolated (24-char Meta cap,
+        // same reasoning as sendButtonsAndSuspend above). Description
+        // has real room (72 chars) and isn't the fixed catalog label
+        // rows are meant to be, so it does get interpolated.
         title: r.title,
-        description: r.description,
+        description: r.description
+          ? interpolateVars(r.description, run.vars, contact)
+          : r.description,
       })),
     })),
   });
@@ -518,17 +542,61 @@ async function evaluateConditionNode(
 }
 
 /**
- * Tiny `{{vars.foo}}` interpolation. Used by send_message + collect_input
- * prompt text so a captured `name` can show up in the next prompt
- * ("Thanks {{vars.name}}, what's your email?"). Missing vars render as
- * empty string — the same behavior as the automations engine.
+ * The four contact columns `condition` nodes already treat as native
+ * (see evaluateConditionNode's `contact_field` subject above) --
+ * reused here so `{{contact.X}}` interpolation resolves the same set.
  */
-function interpolateVars(template: string, vars: Record<string, unknown>): string {
+const CONTACT_INTERPOLATION_FIELDS = ["name", "email", "phone", "company"] as const;
+
+/**
+ * Fetch a contact's interpolatable fields once per dispatch, not once
+ * per node/message -- callers hold the result across every
+ * interpolateVars() call within a single advanceFromNodeKey /
+ * handleReplyForActiveRun invocation instead of re-querying per call.
+ */
+async function loadContactFields(
+  db: AdminClient,
+  contactId: string | null,
+): Promise<Record<string, string>> {
+  if (!contactId) return {};
+  const { data } = await db
+    .from("contacts")
+    .select(CONTACT_INTERPOLATION_FIELDS.join(", "))
+    .eq("id", contactId)
+    .maybeSingle();
+  const row = data as Record<string, string | null> | null;
+  if (!row) return {};
+  const fields: Record<string, string> = {};
+  for (const key of CONTACT_INTERPOLATION_FIELDS) {
+    if (row[key]) fields[key] = row[key] as string;
+  }
+  return fields;
+}
+
+/**
+ * `{{vars.foo}}` / `{{contact.foo}}` interpolation. `vars.*` is
+ * captured by collect_input ("Thanks {{vars.name}}, what's your
+ * email?"); `contact.*` resolves the four fields above straight off
+ * the contact record -- available from the very first message a flow
+ * sends, before any collect_input has run (vars starts seeded from
+ * the WhatsApp profile name for the common case, but contact.* is the
+ * explicit, always-current way to reach the same data and the only
+ * way to reach email/phone/company before they've been asked).
+ * Missing vars or contact fields both render as empty string --
+ * matches the automations engine's existing behavior for `vars.*`.
+ */
+function interpolateVars(
+  template: string,
+  vars: Record<string, unknown>,
+  contact: Record<string, string> = {},
+): string {
   if (!template) return "";
-  return template.replace(/\{\{vars\.([a-zA-Z0-9_]+)\}\}/g, (_, key) => {
-    const v = vars[key];
-    return v === undefined || v === null ? "" : String(v);
-  });
+  return template
+    .replace(/\{\{vars\.([a-zA-Z0-9_]+)\}\}/g, (_, key) => {
+      const v = vars[key];
+      return v === undefined || v === null ? "" : String(v);
+    })
+    .replace(/\{\{contact\.([a-zA-Z0-9_]+)\}\}/g, (_, key) => contact[key] ?? "");
 }
 
 async function endRun(
@@ -560,6 +628,10 @@ async function advanceFromNodeKey(
   startNodeKey: string,
   nodes: Map<string, FlowNodeRow>,
 ): Promise<{ outcome: "advanced" | "completed" | "handed_off" }> {
+  // Fetched once per call, not once per node -- this loop can walk
+  // through several auto-advance nodes before suspending, and every
+  // interpolateVars() call below shares the same snapshot.
+  const contact = await loadContactFields(db, run.contact_id);
   let currentKey: string | null = startNodeKey;
   // Defensive cap — if a flow has a cycle (which the validator
   // SHOULD catch but doesn't yet in v1), we bail rather than loop.
@@ -595,7 +667,7 @@ async function advanceFromNodeKey(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.text, run.vars),
+          text: interpolateVars(cfg.text, run.vars, contact),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "send_message",
@@ -623,7 +695,7 @@ async function advanceFromNodeKey(
           kind: cfg.media_type,
           link: cfg.media_url,
           caption: cfg.caption
-            ? interpolateVars(cfg.caption, run.vars)
+            ? interpolateVars(cfg.caption, run.vars, contact)
             : undefined,
           filename: cfg.filename,
         });
@@ -653,7 +725,7 @@ async function advanceFromNodeKey(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.prompt_text, run.vars),
+          text: interpolateVars(cfg.prompt_text, run.vars, contact),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "collect_input",
@@ -747,7 +819,7 @@ async function advanceFromNodeKey(
       continue;
     }
     if (node.node_type === "send_buttons") {
-      await sendButtonsAndSuspend(db, run, node);
+      await sendButtonsAndSuspend(db, run, node, contact);
       // Persist the new current_node_key via optimistic UPDATE.
       const advanced = await advanceCurrentNodeKey(
         db,
@@ -763,7 +835,7 @@ async function advanceFromNodeKey(
       return { outcome: "advanced" };
     }
     if (node.node_type === "send_list") {
-      await sendListAndSuspend(db, run, node);
+      await sendListAndSuspend(db, run, node, contact);
       const advanced = await advanceCurrentNodeKey(
         db,
         run.id,
@@ -1042,10 +1114,16 @@ async function handleReplyForActiveRun(
   }
   if (action.type === "reprompt") {
     // Re-send the same prompt. Same node, no current_node_key change.
+    // Fetched here, lazily, rather than at the top of the function --
+    // the common "matched" path above returns early via
+    // advanceFromNodeKey (which does its own fetch), so an
+    // unconditional fetch at the top would query on every reply for a
+    // value only the reprompt branch actually uses.
+    const contact = await loadContactFields(db, run.contact_id);
     if (currentNode.node_type === "send_buttons") {
-      await sendButtonsAndSuspend(db, run, currentNode);
+      await sendButtonsAndSuspend(db, run, currentNode, contact);
     } else if (currentNode.node_type === "send_list") {
-      await sendListAndSuspend(db, run, currentNode);
+      await sendListAndSuspend(db, run, currentNode, contact);
     } else if (currentNode.node_type === "collect_input") {
       // Customer typed something we couldn't accept (empty after trim,
       // or var_key missing — rare). Re-send the prompt so they try again.
@@ -1056,7 +1134,7 @@ async function handleReplyForActiveRun(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.prompt_text, run.vars),
+          text: interpolateVars(cfg.prompt_text, run.vars, contact),
         });
       } catch (err) {
         await logEvent(db, run.id, "error", currentNode.node_key, {
