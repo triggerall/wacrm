@@ -377,7 +377,16 @@ async function handleStatusUpdate(status: {
   //    (added in migration 003). The aggregate trigger on
   //    broadcast_recipients re-derives the parent broadcast's
   //    sent/delivered/read/failed counts automatically.
-  const tsIso = new Date(parseInt(status.timestamp) * 1000).toISOString()
+  // Meta's payload for this field should always include a numeric
+  // timestamp, but fall back to "now" rather than crashing the whole
+  // webhook batch if it's ever missing or malformed (e.g. a synthetic
+  // test payload) -- a wrong-by-a-few-seconds timestamp is harmless;
+  // an unhandled throw here aborts processing of every other change
+  // in the same webhook POST, including unrelated real messages.
+  const parsedTimestamp = parseInt(status.timestamp, 10)
+  const tsIso = Number.isFinite(parsedTimestamp)
+    ? new Date(parsedTimestamp * 1000).toISOString()
+    : new Date().toISOString()
 
   const { data: recipient, error: recFetchErr } = await supabaseAdmin()
     .from('broadcast_recipients')

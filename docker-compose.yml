@@ -1,0 +1,27 @@
+services:
+  wacrm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_SITE_URL: https://wa.triggerall.com
+        NEXT_PUBLIC_APP_LOCALE: en
+    container_name: wacrm
+    restart: always
+    env_file: /opt/waba-secrets/wacrm.env
+    environment:
+      NEXT_PUBLIC_SITE_URL: https://wa.triggerall.com
+    networks:
+      - proxy-net
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.wacrm.rule=Host(`wa.triggerall.com`)
+      - traefik.http.routers.wacrm.entrypoints=websecure
+      - traefik.http.routers.wacrm.tls.certresolver=letsencrypt
+      - traefik.http.services.wacrm.loadbalancer.server.port=3000
+
+networks:
+  proxy-net:
+    external: true
