@@ -658,7 +658,9 @@ function ConditionForm({
               onValueChange={(v) => onUpdateConfig({ subject_key: v })}
             >
               <SelectTrigger className="bg-muted">
-                <SelectValue placeholder="Pick a tag…" />
+                <SelectValue placeholder="Pick a tag…">
+                  {(value: string) => tags.find((t) => t.id === value)?.name ?? value}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {tags.map((t) => (
@@ -806,7 +808,16 @@ function SetTagForm({
               onValueChange={(v) => onUpdateConfig({ tag_id: v })}
             >
               <SelectTrigger className="bg-muted">
-                <SelectValue placeholder="Pick a tag…" />
+                {/* Explicit render-prop instead of relying on Base UI's
+                    automatic SelectItem-derived label: a pre-set tag_id
+                    (loaded from an existing flow, not chosen through this
+                    dropdown in the current session) otherwise displays as
+                    the raw UUID until the user interacts with it, since
+                    the trigger's label only resolves from an item that's
+                    actually been rendered/selected once. */}
+                <SelectValue placeholder="Pick a tag…">
+                  {(value: string) => tags.find((t) => t.id === value)?.name ?? value}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {tags.map((t) => (
