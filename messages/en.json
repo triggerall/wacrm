@@ -1195,7 +1195,7 @@
       "opMissing": "missing",
       "modeAdd": "Add",
       "modeRemove": "Remove",
-      "tagPicked": "{mode} tag {tag}…",
+      "tagPicked": "{mode} tag {tag}",
       "tagNone": "{mode} tag (none picked)"
     }
   },

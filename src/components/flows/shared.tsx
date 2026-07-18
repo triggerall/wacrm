@@ -16,6 +16,7 @@
  * file .tsx future-proofs it for inline JSX in node-card renderers.
  */
 
+import { useEffect, useState } from 'react';
 import {
   Flag,
   GitFork,
@@ -31,6 +32,40 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { createClient } from '@/lib/supabase/client';
+
+export interface FlowTag {
+  id: string;
+  name: string;
+  color?: string;
+}
+
+/**
+ * Shared tag loader for anything rendering a node *summary* (the
+ * List/Canvas card preview, not the editing form -- node-config-form.tsx
+ * has its own copy for the editing path, kept separate so this fix
+ * can't regress that one). Called once per view (FlowBuilder /
+ * FlowCanvas), not per node card, to avoid N redundant identical
+ * queries for an N-node flow.
+ */
+export function useFlowTags(): FlowTag[] {
+  const [tags, setTags] = useState<FlowTag[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const supabase = createClient();
+    (async () => {
+      const { data, error } = await supabase
+        .from('tags')
+        .select('id, name, color')
+        .order('name');
+      if (!cancelled && !error && data) setTags(data as FlowTag[]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return tags;
+}
 
 // ============================================================
 // Node-type union — single source of truth for every place the UI
@@ -307,7 +342,8 @@ export function truncate(s: string, max = 80): string {
 
 export function summarizeNode(
   node: BuilderNode,
-  t?: (key: string, values?: Record<string, string | number>) => string
+  t?: (key: string, values?: Record<string, string | number>) => string,
+  tags?: FlowTag[]
 ): string | null {
   const cfg = node.config;
   switch (node.node_type) {
@@ -413,12 +449,12 @@ export function summarizeNode(
     case 'set_tag': {
       const mode = cfg.mode === 'remove' ? (t ? t('modeRemove') : 'Remove') : (t ? t('modeAdd') : 'Add');
       const tagId = typeof cfg.tag_id === 'string' ? cfg.tag_id : '';
-      // No tag name available without an async lookup here; show a
-      // short prefix of the UUID so users can disambiguate between
-      // multiple set_tag nodes at a glance.
-      return tagId
-        ? t ? t('tagPicked', { mode, tag: tagId.slice(0, 8) }) : `${mode} tag ${tagId.slice(0, 8)}…`
-        : t ? t('tagNone', { mode }) : `${mode} tag (none picked)`;
+      if (!tagId) return t ? t('tagNone', { mode }) : `${mode} tag (none picked)`;
+      // Resolve to the real name when the caller passed a loaded tags
+      // list; fall back to a UUID prefix only while tags are still
+      // loading (or for a stale/deleted tag_id), same as before.
+      const tagName = tags?.find((tg) => tg.id === tagId)?.name ?? `${tagId.slice(0, 8)}…`;
+      return t ? t('tagPicked', { mode, tag: tagName }) : `${mode} tag ${tagName}`;
     }
     case 'handoff': {
       const note = typeof cfg.note === 'string' ? cfg.note : '';

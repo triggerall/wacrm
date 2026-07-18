@@ -1194,7 +1194,7 @@
       "opMissing": "존재하지 않음",
       "modeAdd": "추가",
       "modeRemove": "제거",
-      "tagPicked": "{tag} 태그 {mode}…",
+      "tagPicked": "{tag} 태그 {mode}",
       "tagNone": "태그 {mode} (선택된 태그 없음)"
     }
   },

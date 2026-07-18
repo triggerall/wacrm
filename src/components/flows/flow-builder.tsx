@@ -55,6 +55,7 @@ import {
   nodeColors,
   slugify,
   summarizeNode,
+  useFlowTags,
   type BuilderNode,
   type NodeType,
 } from './shared';
@@ -93,6 +94,10 @@ export function FlowBuilder() {
     () => new Set(state.nodes.map((n) => n.node_key))
   );
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // Fetched once for the whole list, not per card -- summarizeNode()
+  // needs it to resolve a set_tag node's tag_id to a real name instead
+  // of a truncated UUID.
+  const flowTags = useFlowTags();
 
   // Wrap addNode so the new node opens expanded in the list view
   // (matches the previous behaviour where adding always revealed the
@@ -197,6 +202,7 @@ export function FlowBuilder() {
               onSetEntry={() =>
                 setState((s) => ({ ...s, entry_node_id: node.node_key }))
               }
+              flowTags={flowTags}
               t={t}
             />
           ))
@@ -386,6 +392,7 @@ function NodeCard({
   onUpdateConfig,
   onRemove,
   onSetEntry,
+  flowTags,
   t,
 }: {
   node: BuilderNode;
@@ -400,13 +407,14 @@ function NodeCard({
   onUpdateConfig: (patch: Record<string, unknown>) => void;
   onRemove: () => void;
   onSetEntry: () => void;
+  flowTags: ReturnType<typeof useFlowTags>;
   t: ReturnType<typeof useTranslations>;
 }) {
   const meta = NODE_META[node.node_type];
   const c = nodeColors(node.node_type);
   const hasError = issues.some((i) => i.severity === 'error');
   const tSummary = useTranslations('Flows.summary');
-  const preview = summarizeNode(node, tSummary);
+  const preview = summarizeNode(node, tSummary, flowTags);
   return (
     <div
       ref={cardRef}

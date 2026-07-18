@@ -83,6 +83,7 @@ import {
   groupNodeTypesByCategory,
   nodeColors,
   summarizeNode,
+  useFlowTags,
   type BuilderNode,
   type NodeType,
 } from './shared';
@@ -139,7 +140,14 @@ function FlowNodeCard({ data, selected }: NodeProps) {
   const meta = NODE_META[node.node_type];
   const c = nodeColors(node.node_type);
   const tSummary = useTranslations('Flows.summary');
-  const summary = summarizeNode(node, tSummary);
+  // Called directly here (one FlowNodeCard per node, same as the
+  // existing useTranslations call above) rather than threaded through
+  // React Flow's `data` prop -- React Flow owns how nodes get built
+  // into its internal array, and reaching into that pipeline just to
+  // pass one extra prop is riskier than N identical, cheap, cached
+  // Supabase reads for a canvas of this size.
+  const flowTags = useFlowTags();
+  const summary = summarizeNode(node, tSummary, flowTags);
   const slots = outgoingSlots(node);
   // Start nodes are entry-only; nothing ever targets them, so they
   // don't need an incoming Handle. Every other node type accepts
