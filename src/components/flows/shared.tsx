@@ -41,25 +41,53 @@ export interface FlowTag {
 }
 
 /**
+ * Module-level cache + in-flight promise, shared across every
+ * useFlowTags() call regardless of which component mounts it. Canvas
+ * view calls this once per node card (FlowNodeCard is registered as a
+ * React Flow node type, rendered N times with no shared parent to
+ * hoist a single fetch into) -- without this, an N-node flow fired N
+ * simultaneous identical requests and each card's summary popped in
+ * independently as its own request resolved, a visible flicker on
+ * canvas load. All callers now await the same promise, so every card
+ * resolves together after one network round trip.
+ */
+let flowTagsCache: FlowTag[] | null = null;
+let flowTagsInFlight: Promise<FlowTag[]> | null = null;
+
+function loadFlowTags(): Promise<FlowTag[]> {
+  if (flowTagsCache) return Promise.resolve(flowTagsCache);
+  if (flowTagsInFlight) return flowTagsInFlight;
+  const supabase = createClient();
+  flowTagsInFlight = supabase
+    .from('tags')
+    .select('id, name, color')
+    .order('name')
+    .then(({ data, error }) => {
+      flowTagsInFlight = null;
+      if (error || !data) return [];
+      flowTagsCache = data as FlowTag[];
+      return flowTagsCache;
+    });
+  return flowTagsInFlight;
+}
+
+/**
  * Shared tag loader for anything rendering a node *summary* (the
  * List/Canvas card preview, not the editing form -- node-config-form.tsx
  * has its own copy for the editing path, kept separate so this fix
- * can't regress that one). Called once per view (FlowBuilder /
- * FlowCanvas), not per node card, to avoid N redundant identical
- * queries for an N-node flow.
+ * can't regress that one). Safe to call once per node card; the
+ * underlying fetch is deduplicated and cached at module scope (see
+ * loadFlowTags above), so this never fires more than one real request
+ * per page load no matter how many times it's called.
  */
 export function useFlowTags(): FlowTag[] {
-  const [tags, setTags] = useState<FlowTag[]>([]);
+  const [tags, setTags] = useState<FlowTag[]>(() => flowTagsCache ?? []);
   useEffect(() => {
+    if (flowTagsCache) return;
     let cancelled = false;
-    const supabase = createClient();
-    (async () => {
-      const { data, error } = await supabase
-        .from('tags')
-        .select('id, name, color')
-        .order('name');
-      if (!cancelled && !error && data) setTags(data as FlowTag[]);
-    })();
+    loadFlowTags().then((result) => {
+      if (!cancelled) setTags(result);
+    });
     return () => {
       cancelled = true;
     };
