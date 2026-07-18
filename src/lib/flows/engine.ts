@@ -60,6 +60,14 @@ import {
   type KeywordTriggerConfig,
 } from "./types";
 
+/**
+ * `collect_input` var_keys that mirror onto a real `contacts` column
+ * (see evaluateConditionNode's `contact_field` subject, which already
+ * assumes these four exist). Any other var_key stays flow-scoped in
+ * `flow_runs.vars` only.
+ */
+const CONTACT_SYNC_VAR_KEYS = new Set(["name", "email", "phone", "company"]);
+
 // ============================================================
 // Pure helpers — extracted so engine.test.ts can exercise them
 // without a Supabase / Meta mock.
@@ -963,6 +971,29 @@ async function handleReplyForActiveRun(
           captured_length: captured.length,
         });
         matched = cfg.next_node_key;
+
+        // Mirror well-known captures onto the contact record itself.
+        // Flows have no "update contact field" node — without this,
+        // a captured email/company only ever lives in flow_runs.vars
+        // and a one-time handoff note text, invisible in the Contacts
+        // list, Deals, or to a future condition node checking
+        // `contact_field`. Scoped to the same four fields Condition
+        // nodes already treat as native contact fields (see
+        // evaluateConditionNode's `contact_field` subject) — an
+        // arbitrary var_key like "budget" or "process_description"
+        // is untouched and stays flow-scoped as before.
+        if (CONTACT_SYNC_VAR_KEYS.has(cfg.var_key) && run.contact_id) {
+          const { error: contactSyncErr } = await db
+            .from("contacts")
+            .update({ [cfg.var_key]: captured })
+            .eq("id", run.contact_id);
+          if (contactSyncErr) {
+            console.error(
+              "[flows] failed to mirror collect_input capture onto contact",
+              { contact_id: run.contact_id, var_key: cfg.var_key, error: contactSyncErr },
+            );
+          }
+        }
       }
     }
   }
