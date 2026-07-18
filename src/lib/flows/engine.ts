@@ -1091,6 +1091,24 @@ async function startNewRun(
   input: DispatchInboundInput,
   nodes: Map<string, FlowNodeRow>,
 ): Promise<DispatchInboundResult> {
+  // Seed vars.name from the contact's WhatsApp profile name, first
+  // word only (profile names aren't guaranteed to be "First Last" --
+  // could be a nickname, business name, emoji, anything). Lets the
+  // very first message a flow sends (before any collect_input has run)
+  // still interpolate {{vars.name}} instead of rendering blank. A
+  // later collect_input asking "what's your name?" overwrites this
+  // the normal way -- self-reported beats an inferred WhatsApp
+  // display name, same as it already would for any other var_key.
+  const { data: contactRow } = await db
+    .from("contacts")
+    .select("name")
+    .eq("id", input.contactId)
+    .maybeSingle();
+  const profileFirstName = (contactRow as { name: string | null } | null)?.name
+    ?.trim()
+    .split(/\s+/)[0];
+  const initialVars = profileFirstName ? { name: profileFirstName } : {};
+
   // INSERT — partial unique index `idx_one_active_run_per_contact`
   // catches concurrent inserts with 23505. We catch and return as
   // consumed:true (the parallel webhook handles it).
@@ -1110,6 +1128,7 @@ async function startNewRun(
       conversation_id: input.conversationId,
       status: "active",
       current_node_key: flow.entry_node_id,
+      vars: initialVars,
     })
     .select("*")
     .maybeSingle();
