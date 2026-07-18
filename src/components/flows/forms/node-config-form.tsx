@@ -25,6 +25,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 import {
   Loader2,
   Paperclip,
@@ -838,22 +839,25 @@ function SetTagForm({
 
 /**
  * Shared loader for both `condition` (subject=tag) and `set_tag`.
- * Falls back to raw UUID input if the endpoint is absent on older
- * deployments — the form remains authorable in that case.
+ * Queries `tags` directly via the Supabase client, RLS-scoped to the
+ * caller's account — the same pattern every other tag picker in the
+ * app uses (automation-builder, contacts, broadcasts, conversation
+ * list). This used to fetch a REST `/api/tags` endpoint that was
+ * never actually built anywhere in the codebase, so it 404'd and
+ * silently fell back to a raw-UUID text input on every load,
+ * regardless of how many real tags existed.
  */
 function useUserTags(): UserTag[] {
   const [tags, setTags] = useState<UserTag[]>([]);
   useEffect(() => {
     let cancelled = false;
+    const supabase = createClient();
     (async () => {
-      try {
-        const res = await fetch("/api/tags").catch(() => null);
-        if (!res || !res.ok) return;
-        const json = (await res.json()) as { tags?: UserTag[] };
-        if (!cancelled) setTags(json.tags ?? []);
-      } catch {
-        // Tags endpoint absent — caller falls back to raw input.
-      }
+      const { data, error } = await supabase
+        .from("tags")
+        .select("id, name, color")
+        .order("name");
+      if (!cancelled && !error && data) setTags(data as UserTag[]);
     })();
     return () => {
       cancelled = true;
