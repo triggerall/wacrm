@@ -57,6 +57,19 @@ interface InteractiveBuilderProps {
   onChange: (payload: InteractiveMessagePayload) => void;
   /** Show the live WhatsApp-style preview beside the form. Default true. */
   showPreview?: boolean;
+  /**
+   * Force the form/preview split to stack vertically instead of switching
+   * to a side-by-side row at the `md` viewport breakpoint. The side-by-side
+   * layout assumes the component has ~600px+ of its own width once `md:`
+   * is active, which holds in the two callers that render it inside a
+   * `sm:max-w-2xl` dialog (inbox composer, quick replies) — but not inside
+   * the automation builder, where each step is a fixed `max-w-[320px]`
+   * flow-node card regardless of viewport width. `md:flex-row` there
+   * squeezed the body textarea to near-zero width (text wrapped one
+   * character per line) while the preview panel overlapped it. Set this
+   * when the host container's width isn't tied to the viewport.
+   */
+  stackedPreview?: boolean;
 }
 
 /**
@@ -70,6 +83,7 @@ export function InteractiveBuilder({
   value,
   onChange,
   showPreview = true,
+  stackedPreview = false,
 }: InteractiveBuilderProps) {
   const [advanced, setAdvanced] = useState(false);
   const validation = validateInteractivePayload(value);
@@ -88,7 +102,7 @@ export function InteractiveBuilder({
   };
 
   return (
-    <div className="flex flex-col gap-4 md:flex-row">
+    <div className={cn("flex flex-col gap-4", !stackedPreview && "md:flex-row")}>
       <div className="flex min-w-0 flex-1 flex-col gap-3">
         {/* Kind toggle */}
         <div className="flex gap-2">
@@ -161,7 +175,7 @@ export function InteractiveBuilder({
       </div>
 
       {showPreview && (
-        <div className="flex shrink-0 flex-col gap-1.5 md:w-[280px]">
+        <div className={cn("flex shrink-0 flex-col gap-1.5", !stackedPreview && "md:w-[280px]")}>
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Preview
           </span>
